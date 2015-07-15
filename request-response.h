@@ -171,16 +171,16 @@ typedef struct {
 } http_header_t;
 
 typedef struct {
-    int            method;
-    char           uri[URI_MAX];
+    http_method_t  method;
     int            major_version;
     int            minor_version;
     http_header_t  headers[MAX_HEADERS];
     int            header_count;
+    char           uri[URI_MAX];
 } http_request_t;
 
 typedef struct {
-    http_status_t  status;
+    int            status;
     int            major_version;
     int            minor_version;
     http_header_t  headers[MAX_HEADERS];

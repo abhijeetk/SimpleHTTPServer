@@ -36,8 +36,8 @@ void bad_request(int);
 void cat(int, FILE *);
 void cannot_execute(int);
 void error_die(const char *);
-void execute_cgi(int, const char *, const char *, const char *);
-int get_line(int, char *, int);
+void execute_cgi(int, const char *, const char *, const char *, int);
+//int get_line(int, char *, int);
 void headers(int, const char *);
 void not_found(int);
 void serve_file(int, const char *);
@@ -51,19 +51,22 @@ void unimplemented(int);
 /**********************************************************************/
 void accept_request(int client)
 {
- char buf[1024];
- int numchars;
- char method[255];
- char url[255];
- char path[512];
- size_t i, j;
- struct stat st;
- int cgi = 0;      /* becomes true if server decides this is a CGI
-                    * program */
- char *query_string = NULL;
-/*
- char test[5000];
- memset(&test, 0, 5000);
+  char buf[1024];
+  int numchars;
+  char method[255];
+  char url[255];
+  char path[512];
+  size_t i, j;
+  struct stat st;
+  int cgi = 0;      /* becomes true if server decides this is a CGI
+                  * program */
+  char *query_string = NULL;
+  char qString[1024];
+
+  char test[1024];
+  memset(&test, 0, sizeof(test));
+  int content_length = -1;
+ /*
  buf[0] = 'A'; buf[1] = '\0'; numchars = 1;
  while ((numchars > 0) && strcmp("\n", buf)) { 
   numchars = get_line(client, buf, sizeof(buf));
@@ -71,10 +74,77 @@ void accept_request(int client)
  }
  printf(" Received data -> \n.........\n%s\n........\n", test);
  */
- memset(&buf, 0, sizeof(buf));
+  int numbytes = 0;
+  if ((numbytes=recv(client, test, sizeof(test), 0)) == -1) {
+    perror("recv");
+    exit(1);
+  }
+  test[numbytes] = '\0';
+  //printf("\n..... REQUEST ......\n%s\n......END......\n");
 
- numchars = get_line(client, buf, sizeof(buf));
+  strcpy(buf, test);
+  memset(&method, 0, sizeof(method));
+  char* token = NULL;
+  token = strtok(test, " ");
+  strcpy(&method, token ? token : "");
+  memset(&url, 0, sizeof(url));
+  token =  strtok(NULL, " ");
+  strcpy(&url, token ? token : "");
+  char version[64];
+  memset(&version, 0, sizeof(version));
+  token = strtok(NULL, "\r\n");
+  strcpy(&version, token ? token : "");
+  if (strcasecmp(method, "GET") != 0 &&
+      strcasecmp(method, "POST") != 0 &&
+      strcasecmp(method, "HEAD") != 0)
+  {
+    unimplemented(client);
+    return;
+  }
+
+  if (strcasecmp(method, "GET") == 0 && strchr(url, '?'))
+  {
+    cgi = 1;
+    char complete_url[1024];
+    strcpy(complete_url, url);
+    memset(&url, 0, sizeof(url));
+    token = strtok(complete_url, "?");
+    strcpy(&url, token ? token : "");
+    memset(&qString, 0, sizeof(qString));
+    token = strtok(NULL, '\0');
+    strcpy(&qString, token ? token : "");
+  }
+
+  if (strcasecmp(method, "POST") == 0) {
+    token = strtok(buf, "\r\n");
+    while(token) {
+      //printf("token : %s\n", token);
+      char* found = strstr(token, "Content-Length");
+      if (found)
+      {
+        char curr = *(found + strlen("Content-Length: "));
+        content_length = &curr ? atoi(&curr) : 0;
+        break;
+      }
+      token = strtok(NULL, "\r\n");
+    }
+
+    if (content_length <= 0)
+    {
+       bad_request(client);
+       return;
+    }
+    cgi = 1;
+  }
+
+  //printf(" qString -> %s /t query_string -> %s\n", qString, query_string);
+  //printf("\n.........\nCOMPLETE Received data -> \n metthod : %s\n url : %s version : %s \n", method,url,version);
+
+ //memset(&buf, 0, sizeof(buf));
+
+ //numchars = get_line(client, buf, sizeof(buf));
  //printf(" Received data -> \n.........\n%s\n........\n", buf);
+ /*
  i = 0; j = 0;
  while (!ISspace(buf[j]) && (i < sizeof(method) - 1))
  {
@@ -115,18 +185,15 @@ void accept_request(int client)
   }
   printf(" query_string -> %s\n", query_string);
  }
-
+*/
  sprintf(path, "htdocs%s", url);
 
  if (path[strlen(path) - 1] == '/')
   strcat(path, "index.html");
 
- printf(" path -> %s stat -> %d\n", path, stat(path, &st));
+ //printf(" path -> %s stat -> %d\n", path, stat(path, &st));
  if (stat(path, &st) == -1) {
-  while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
-   numchars = get_line(client, buf, sizeof(buf));
-
-  printf(" buf -> %s numchars -> %d\n", buf, numchars);
+  printf("File Not found %d %s\n", __LINE__, __FUNCTION__);
   not_found(client);
  }
  else
@@ -142,7 +209,7 @@ void accept_request(int client)
   if (!cgi)
    serve_file(client, path);
   else
-   execute_cgi(client, path, method, query_string);
+   execute_cgi(client, path, method, query_string, content_length);
  }
 
  close(client);
@@ -224,7 +291,7 @@ void error_die(const char *sc)
  *             path to the CGI script */
 /**********************************************************************/
 void execute_cgi(int client, const char *path,
-                 const char *method, const char *query_string)
+                 const char *method, const char *query_string, int content_length)
 {
  char buf[1024];
  int cgi_output[2];
@@ -234,28 +301,34 @@ void execute_cgi(int client, const char *path,
  int i;
  char c;
  int numchars = 1;
- int content_length = -1;
+ //int content_length = -1;
  printf("Inside execute_cgi\n");
+ #if 0
  buf[0] = 'A'; buf[1] = '\0';
+
  if (strcasecmp(method, "GET") == 0)
-  while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
-   numchars = get_line(client, buf, sizeof(buf));
+  printf("GET method\n");
+  //while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
+  // numchars = 0;//get_line(client, buf, sizeof(buf));
  else    /* POST */
  {
-  numchars = get_line(client, buf, sizeof(buf));
+
+  numchars = 0;//get_line(client, buf, sizeof(buf));
   printf("buf -> %s numchars -> %d\n", buf, numchars);
   while ((numchars > 0) && strcmp("\n", buf))
   {
    buf[15] = '\0';
    if (strcasecmp(buf, "Content-Length:") == 0)
     content_length = atoi(&(buf[16]));
-   numchars = get_line(client, buf, sizeof(buf));
+   numchars = 0;//get_line(client, buf, sizeof(buf));
   }
   if (content_length == -1) {
    bad_request(client);
    return;
   }
+
  }
+#endif
  sprintf(buf, "HTTP/1.0 200 OK\r\n");
  send(client, buf, strlen(buf), 0);
 
@@ -274,6 +347,7 @@ void execute_cgi(int client, const char *path,
  }
  if (pid == 0)  /* child: CGI script */
  {
+  printf("child: CGI script\n");
   char meth_env[255];
   char query_env[255];
   char length_env[255];
@@ -290,17 +364,20 @@ void execute_cgi(int client, const char *path,
   }
   else {   /* POST */
    sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
+   printf("length_env %s\n", length_env);
    putenv(length_env);
   }
   execl(path, path, NULL);
   exit(0);
  } else {    /* parent */
+  printf("parent: CGI script\n");
   close(cgi_output[1]);
   close(cgi_input[0]);
   if (strcasecmp(method, "POST") == 0)
    for (i = 0; i < content_length; i++) {
     recv(client, &c, 1, 0);
     write(cgi_input[1], &c, 1);
+    printf(" %c ", c);
    }
   while (read(cgi_output[0], &c, 1) > 0)
    send(client, &c, 1, 0);
@@ -309,52 +386,6 @@ void execute_cgi(int client, const char *path,
   close(cgi_input[1]);
   waitpid(pid, &status, 0);
  }
-}
-
-/**********************************************************************/
-/* Get a line from a socket, whether the line ends in a newline,
- * carriage return, or a CRLF combination.  Terminates the string read
- * with a null character.  If no newline indicator is found before the
- * end of the buffer, the string is terminated with a null.  If any of
- * the above three line terminators is read, the last character of the
- * string will be a linefeed and the string will be terminated with a
- * null character.
- * Parameters: the socket descriptor
- *             the buffer to save the data in
- *             the size of the buffer
- * Returns: the number of bytes stored (excluding null) */
-/**********************************************************************/
-int get_line(int sock, char *buf, int size)
-{
- int i = 0;
- char c = '\0';
- int n;
-
- while ((i < size - 1) && (c != '\n'))
- {
-  n = recv(sock, &c, 1, 0);
-  //printf("%c\n", c);
-  if (n > 0)
-  {
-   if (c == '\r')
-   {
-    n = recv(sock, &c, 1, MSG_PEEK);
-    //printf("%c\n", c);
-    if ((n > 0) && (c == '\n'))
-     recv(sock, &c, 1, 0);
-    else
-     c = '\n';
-   }
-   buf[i] = c;
-   i++;
-  }
-  else
-   c = '\n';
- }
- buf[i] = '\0';
- //printf(" Inside get_line %s \n", buf);
- fflush(stdin);
- return(i);
 }
 
 /**********************************************************************/
@@ -415,19 +446,9 @@ void not_found(int client)
 void serve_file(int client, const char *filename)
 {
  FILE *resource = NULL;
- int numchars = 1;
- char buf[1024];
- char test[5000];
- memset(&test, 0, 5000);
-
- buf[0] = 'A'; buf[1] = '\0';
- while ((numchars > 0) && strcmp("\n", buf)) { /* NOTE : read & discard headers */
-  numchars = get_line(client, buf, sizeof(buf));
-  strcat(test, buf);
-}
 
  resource = fopen(filename, "r");
- printf("serve_file %s %p\n..............\n%s\n.........\n", filename, resource, test);
+ printf("serve_file %s %p\n..............\n%s\n.........\n", filename, resource);
  if (resource == NULL)
   not_found(client);
  else
