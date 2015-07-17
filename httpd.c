@@ -80,29 +80,35 @@ void accept_request(int client)
     exit(1);
   }
   test[numbytes] = '\0';
-  //printf("\n..... REQUEST ......\n%s\n......END......\n");
+  printf("\n..... REQUEST ......\n%s\n......END......\n", test);
 
   strcpy(buf, test);
   memset(&method, 0, sizeof(method));
   char* token = NULL;
   token = strtok(test, " ");
   strcpy(&method, token ? token : "");
+  printf("1.\n");
   memset(&url, 0, sizeof(url));
   token =  strtok(NULL, " ");
   strcpy(&url, token ? token : "");
+  printf("2.\n");
   char version[64];
   memset(&version, 0, sizeof(version));
   token = strtok(NULL, "\r\n");
   strcpy(&version, token ? token : "");
-  if (strcasecmp(method, "GET") != 0 &&
-      strcasecmp(method, "POST") != 0 &&
-      strcasecmp(method, "HEAD") != 0)
+  printf("3. method -> %s url -> %s version -> %s\n", method, url, version);
+  if (strcasecmp(&method, "GET") != 0 &&
+      strcasecmp(&method, "POST") != 0 &&
+      strcasecmp(&method, "HEAD") != 0)
   {
+    printf("4.\n");
     unimplemented(client);
+    printf("5.\n");
     return;
   }
 
-  if (strcasecmp(method, "GET") == 0 && strchr(url, '?'))
+  printf("Check if it is GET method");
+  if (strcasecmp(&method, "GET") == 0 && strchr(url, '?'))
   {
     cgi = 1;
     char complete_url[1024];
@@ -115,26 +121,34 @@ void accept_request(int client)
     strcpy(&qString, token ? token : "");
   }
 
+  printf("Check if it is POST method");
   if (strcasecmp(method, "POST") == 0) {
+    char prev_token[1024];
+    memset(&prev_token, 0, sizeof(prev_token));
     token = strtok(buf, "\r\n");
     while(token) {
-      //printf("token : %s\n", token);
       char* found = strstr(token, "Content-Length");
-      if (found)
-      {
+      if (found) {
         char curr = *(found + strlen("Content-Length: "));
         content_length = &curr ? atoi(&curr) : 0;
+        if (content_length <= 0)
+        {
+          bad_request(client);
+          return;
+        }
+      }
+
+      cgi = 1;
+      strcpy(&prev_token, token);
+      token = strtok(NULL, "\r\n");
+
+      if (token == NULL && strchr(prev_token, '=')) {
+        memset(&qString, 0, sizeof(qString));
+        strcpy(&qString, prev_token);
         break;
       }
-      token = strtok(NULL, "\r\n");
+      //printf("token : %s\n", prev_token);
     }
-
-    if (content_length <= 0)
-    {
-       bad_request(client);
-       return;
-    }
-    cgi = 1;
   }
 
   //printf(" qString -> %s /t query_string -> %s\n", qString, query_string);
@@ -209,7 +223,7 @@ void accept_request(int client)
   if (!cgi)
    serve_file(client, path);
   else
-   execute_cgi(client, path, method, query_string, content_length);
+   execute_cgi(client, path, method, &qString, content_length);
  }
 
  close(client);
@@ -249,7 +263,7 @@ void cat(int client, FILE *resource)
  fgets(buf, sizeof(buf), resource);
  while (!feof(resource))
  {
-  printf(" Sending data to browser .....\n%s\n", buf);
+  //printf(" Sending data to browser .....\n%s\n", buf);
   send(client, buf, strlen(buf), 0);
   fgets(buf, sizeof(buf), resource);
  }
@@ -302,7 +316,7 @@ void execute_cgi(int client, const char *path,
  char c;
  int numchars = 1;
  //int content_length = -1;
- printf("Inside execute_cgi\n");
+ printf("Inside execute_cgi %s\n", query_string);
  #if 0
  buf[0] = 'A'; buf[1] = '\0';
 
