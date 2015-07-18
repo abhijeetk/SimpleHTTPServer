@@ -1,15 +1,20 @@
-#!/usr/local/bin/perl -Tw
+#!/usr/bin/perl -Tw
 
 use strict;
 use CGI;
 
 my($cgi) = new CGI;
 
-print $cgi->header;
+#print $cgi->header;
 my($color) = "blue";
-$color = $cgi->param('color') if defined $cgi->param('color');
+my($path) = $ENV{'PATH'};
+foreach (sort keys %ENV) { 
+  print $cgi->span("$_  =  $ENV{$_}\n"); 
+  print $cgi->br; 
+}
+#$color = $cgi->param('color') if defined $cgi->param('color');
 
-print $cgi->start_html(-title => uc($color),
-                       -BGCOLOR => $color);
-print $cgi->h1("This is $color");
-print $cgi->end_html;
+#print $cgi->start_html(-title => uc($color),
+#                       -BGCOLOR => $color);
+#print $cgi->h1("This is $path");
+#print $cgi->end_html;

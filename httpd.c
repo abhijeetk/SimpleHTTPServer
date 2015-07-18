@@ -346,19 +346,57 @@ void execute_cgi(int client, const char *path,
  sprintf(buf, "HTTP/1.0 200 OK\r\n");
  send(client, buf, strlen(buf), 0);
 
- if (pipe(cgi_output) < 0) {
-  cannot_execute(client);
-  return;
- }
- if (pipe(cgi_input) < 0) {
-  cannot_execute(client);
-  return;
- }
+ strcpy(buf, SERVER_STRING);
+ send(client, buf, strlen(buf), 0);
+ sprintf(buf, "Content-Type: text/html\r\n");
+ send(client, buf, strlen(buf), 0);
+ strcpy(buf, "\r\n");
+ send(client, buf, strlen(buf), 0);
 
- if ( (pid = fork()) < 0 ) {
-  cannot_execute(client);
-  return;
- }
+  char meth_env[255];
+  char query_env[255];
+  char length_env[255];
+
+  FILE *pipein_fp, *pipeout_fp;
+  char readbuf[1024];
+  memset(&readbuf, 0, sizeof(readbuf));
+
+  sprintf(query_env, "QUERY_STRING=%s", query_string);
+  putenv(query_env);
+  sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
+  putenv(length_env);
+
+  if (( pipein_fp = popen(path, "r")) == NULL)
+  {
+    perror("popen");
+    exit(1);
+  }
+
+  /* Processing loop */
+  printf("\n.........Response-1.........");
+
+  while(fgets(readbuf, sizeof(readbuf), pipein_fp) != NULL) {
+    unsigned int bytesRead = strlen(readbuf);
+    if (bytesRead == sizeof(readbuf))
+    {
+      send(client, readbuf, sizeof(readbuf), 0);
+      printf("%s\n", readbuf);
+    }
+    else
+    {
+      char* p = (char*)malloc((bytesRead)*sizeof(char));
+      strncpy (p, readbuf, bytesRead);
+      printf("%s\n", p);
+      send(client, p, bytesRead, 0);
+      free(p);
+    }
+    memset(&readbuf, 0, sizeof(readbuf));
+  }
+  printf("\n.........END Response.........\n"); 
+
+  /* Close the pipes */
+  pclose(pipein_fp);  
+#if 0
  if (pid == 0)  /* child: CGI script */
  {
   printf("child: CGI script\n");
@@ -400,6 +438,7 @@ void execute_cgi(int client, const char *path,
   close(cgi_input[1]);
   waitpid(pid, &status, 0);
  }
+ #endif
 }
 
 /**********************************************************************/
