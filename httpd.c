@@ -32,7 +32,7 @@ void send_header_not_found(int); // Not found 404
 void execute_cgi(int, const char *, const char *, const char *);
 void serve_file(int, const char *);
 
-void error_exit(const char *);
+void server_log(const char *);
 void unimplemented(int);
 void setEnviormentForCGI(char* query_string);
 
@@ -68,38 +68,37 @@ static void* handle_request_response(int client_sock)
 void receive_request(int client)
 {
   char buf[1024];
-  int numchars;
   char method[255];
   char url[255];
   char path[512];
-  size_t i, j;
   struct stat st;
   int cgi = 0;      /* becomes true if server decides this is a CGI
                   * program */
   char *query_string = NULL;
   char qString[1024];
 
-  char test[1024];
-  memset(&test, 0, sizeof(test));
+  char requestBuffer[1024];
+  memset(&requestBuffer, 0, sizeof(requestBuffer));
   int content_length = -1;
 
   int numbytes = 100;
 
-  if ((numbytes=recv(client, test, sizeof(test), 0)) == -1)
-    error_exit("Request is not received\n");
-
-  if (numbytes == 0) {
-    send_header_failure(client);
-    error_exit("No messages are available or peer has performed an orderly shutdown.\n");
+  if ((numbytes=recv(client, requestBuffer, sizeof(requestBuffer), 0)) == -1) {
+    server_log("Request is not received\n");
     return;
   }
 
-  test[numbytes] = '\0';
-  printf("\n.......REQUEST......\n%s\n.....Size %d.....numbytes %d\n", test, strlen(test), numbytes);
-  strcpy(buf, test);
+  if (numbytes == 0) {
+    server_log("No messages are available or peer has performed an orderly shutdown.\n");
+    return;
+  }
+
+  requestBuffer[numbytes] = '\0';
+  printf("\n.......REQUEST......\n%s\n.....Size %d.....numbytes %d\n", requestBuffer, strlen(requestBuffer), numbytes);
+  strcpy(buf, requestBuffer);
   memset(&method, 0, sizeof(method));
   char* token = NULL;
-  token = strtok(test, " ");
+  token = strtok(requestBuffer, " ");
   strcpy(&method, token ? token : "");
 
   memset(&url, 0, sizeof(url));
@@ -196,7 +195,8 @@ void receive_request(int client)
       {
         cgi = 0;
         send_header_error(client, "Error prohibited CGI execution.");
-        error_exit("CGI file should have executable permission");
+        server_log("CGI file should have executable permission");
+        return;
       } 
     }
 
@@ -267,12 +267,9 @@ void send_header_error(int client, const char* err_msg)
  * on value of errno, which indicates system call errors) and exit the
  * program indicating an error. */
 /**********************************************************************/
-void error_exit(const char *sc)
+void server_log(const char *sc)
 {
  perror(sc);
- printf("Thread is exiting due to error");
- fflush(stdin);
- pthread_exit(pthread_self);
 }
 
 /**********************************************************************/
@@ -313,7 +310,8 @@ void execute_cgi(int client, const char *path,
 
   if ((pipein_fp = popen(path, "r")) == NULL) {
     send_header_error(client, "Permission error.");
-    error_exit("popen");
+    server_log("popen");
+    return;
   } else {
     setEnviormentForCGI(query_string);
     send_header_success(client);
@@ -382,7 +380,8 @@ void serve_file(int client, const char *filename)
   resource = fopen(filename, "r");
   if (resource == NULL) {
     send_header_not_found(client);
-    error_exit(client);
+    server_log(client);
+    return;
   }
   else
   {
@@ -407,7 +406,7 @@ int startup(u_short *port)
 
  httpd = socket(PF_INET, SOCK_STREAM, 0);
  if (httpd == -1)
-  error_exit("socket");
+  server_log("socket");
 
  printf("1. Server socket is created. httpd running on port %d\n", *port);
 
@@ -417,19 +416,19 @@ int startup(u_short *port)
  name.sin_addr.s_addr = htonl(INADDR_ANY);
 
  if (bind(httpd, (struct sockaddr *)&name, sizeof(name)) < 0)
-  error_exit("bind");
+  server_log("bind");
 
  printf("2. Server socket is bind with port number nad IP address\n");
  if (*port == 0)  /* if dynamically allocating a port */
  {
   int namelen = sizeof(name);
   if (getsockname(httpd, (struct sockaddr *)&name, &namelen) == -1)
-   error_exit("getsockname");
+   server_log("getsockname");
   *port = ntohs(name.sin_port);
  }
 
  if (listen(httpd, 5) < 0)
-  error_exit("listen");
+  server_log("listen");
 
  printf("3. Server socket is listning on port %d for connections\n", *port);
  return(httpd);
@@ -487,7 +486,7 @@ int main(void)
                        &client_name_len);
 
   if (client_sock == -1)
-   error_exit("accept");
+   server_log("accept");
 
   printf("4. Server accepted connection request form machine %s\n", inet_ntoa(client_name.sin_addr));
   pthread_t tid;
