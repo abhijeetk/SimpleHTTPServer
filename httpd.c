@@ -1,17 +1,4 @@
-/* J. David's webserver */
-/* This is a simple webserver.
- * Created November 1999 by J. David Blackstone.
- * CSE 4344 (Network concepts), Prof. Zeigler
- * University of Texas at Arlington
- */
-/* This program compiles for Sparc Solaris 2.6.
- * To compile for Linux:
- *  1) Comment out the #include <pthread.h> line.
- *  2) Comment out the line that defines the variable newthread.
- *  3) Comment out the two lines that run pthread_create().
- *  4) Uncomment the line that runs accept_request().
- *  5) Remove -lsocket from the Makefile.
- */
+
 #include <stdio.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -22,34 +9,63 @@
 #include <strings.h>
 #include <string.h>
 #include <sys/stat.h>
-//#include <pthread.h>
+#include <pthread.h>
 #include <sys/wait.h>
 #include <stdlib.h>
+#include <pthread.h>
+#include <signal.h>
 #include "request-response.h"
 
-#define ISspace(x) isspace((int)(x))
+#define SERVER_STRING "Server: SimpleHTTPServer/0.1.0\r\n"
 
-#define SERVER_STRING "Server: jdbhttpd/0.1.0\r\n"
+/* -------- Clinet -------- */
+void receive_request(int);
 
-void accept_request(int);
-void bad_request(int);
-void cat(int, FILE *);
-void cannot_execute(int);
-void error_die(const char *);
-void execute_cgi(int, const char *, const char *, const char *, int);
-//int get_line(int, char *, int);
-void headers(int, const char *);
-void not_found(int);
+/* -------- Server -------- */
+void send_response(int, FILE *);
+
+void send_header_error(int, const char*); // Internal Error 500
+void send_header_failure(int); // Bad request 400
+void send_header_success(int); // OK 200
+void send_header_not_found(int); // Not found 404
+
+void execute_cgi(int, const char *, const char *, const char *);
 void serve_file(int, const char *);
-int startup(u_short *);
+
+void error_exit(const char *);
 void unimplemented(int);
+void setEnviormentForCGI(char* query_string);
+
+int startup(u_short *);
+
+/* -------- Thread handling -------- */
+static void set_signal_mask()
+{
+  static sigset_t   signal_mask;
+  pthread_t  sig_thr_id;      
+  sigemptyset(&signal_mask);
+  sigaddset (&signal_mask, SIGINT);
+  sigaddset (&signal_mask, SIGTERM);
+  sigaddset (&signal_mask, SIGUSR1);
+  sigaddset (&signal_mask, SIGUSR2);
+  pthread_sigmask (SIG_BLOCK, &signal_mask, NULL);
+}
+
+static void* handle_request_response(int client_sock)
+{
+  set_signal_mask();
+  receive_request(client_sock);
+  close(client_sock);
+  printf("\n.....THREAD is exiting.....\n");
+  pthread_exit(pthread_self);
+}
 
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
  * Parameters: the socket connected to the client */
 /**********************************************************************/
-void accept_request(int client)
+void receive_request(int client)
 {
   char buf[1024];
   int numchars;
@@ -66,63 +82,66 @@ void accept_request(int client)
   char test[1024];
   memset(&test, 0, sizeof(test));
   int content_length = -1;
- /*
- buf[0] = 'A'; buf[1] = '\0'; numchars = 1;
- while ((numchars > 0) && strcmp("\n", buf)) { 
-  numchars = get_line(client, buf, sizeof(buf));
-  strcat(test, buf);
- }
- printf(" Received data -> \n.........\n%s\n........\n", test);
- */
-  int numbytes = 0;
-  if ((numbytes=recv(client, test, sizeof(test), 0)) == -1) {
-    perror("recv");
-    exit(1);
-  }
-  test[numbytes] = '\0';
-  printf("\n..... REQUEST ......\n%s\n......END......\n", test);
 
+  int numbytes = 100;
+
+  if ((numbytes=recv(client, test, sizeof(test), 0)) == -1)
+    error_exit("Request is not received\n");
+
+  if (numbytes == 0) {
+    send_header_failure(client);
+    error_exit("No messages are available or peer has performed an orderly shutdown.\n");
+    return;
+  }
+
+  test[numbytes] = '\0';
+  printf("\n.......REQUEST......\n%s\n.....Size %d.....numbytes %d\n", test, strlen(test), numbytes);
   strcpy(buf, test);
   memset(&method, 0, sizeof(method));
   char* token = NULL;
   token = strtok(test, " ");
   strcpy(&method, token ? token : "");
-  printf("1.\n");
+
   memset(&url, 0, sizeof(url));
   token =  strtok(NULL, " ");
   strcpy(&url, token ? token : "");
-  printf("2.\n");
+
   char version[64];
   memset(&version, 0, sizeof(version));
   token = strtok(NULL, "\r\n");
   strcpy(&version, token ? token : "");
-  printf("3. method -> %s url -> %s version -> %s\n", method, url, version);
-  if (strcasecmp(&method, "GET") != 0 &&
-      strcasecmp(&method, "POST") != 0 &&
-      strcasecmp(&method, "HEAD") != 0)
+
+  printf("method -> %s url -> %s version -> %s\n", method, url, version);
+
+  if (!(strcasecmp(&method, "HEAD") || strcasecmp(&method, "GET") || strcasecmp(&method, "POST")))
   {
-    printf("4.\n");
     unimplemented(client);
-    printf("5.\n");
     return;
   }
 
-  printf("Check if it is GET method");
-  if (strcasecmp(&method, "GET") == 0 && strchr(url, '?'))
+  if (strcasecmp(&method, "HEAD") == 0)
+  {
+    printf("...HEAD method...\n");
+    send_header_success(client);
+    return;
+  }
+  else if (strcasecmp(&method, "GET") == 0 && strchr(url, '?'))
   {
     cgi = 1;
     char complete_url[1024];
     strcpy(complete_url, url);
+    printf("complete_url -> %s\n", complete_url);
     memset(&url, 0, sizeof(url));
     token = strtok(complete_url, "?");
     strcpy(&url, token ? token : "");
+    printf("url -> %s\n", url);
     memset(&qString, 0, sizeof(qString));
-    token = strtok(NULL, '\0');
+    token = strtok(NULL, "\r\n");
     strcpy(&qString, token ? token : "");
+    printf("method -> %s url -> %s qString -> %s\n", method, url, qString);
   }
-
-  printf("Check if it is POST method");
-  if (strcasecmp(method, "POST") == 0) {
+  else if (strcasecmp(method, "POST") == 0)
+  {
     char prev_token[1024];
     memset(&prev_token, 0, sizeof(prev_token));
     token = strtok(buf, "\r\n");
@@ -133,7 +152,7 @@ void accept_request(int client)
         content_length = &curr ? atoi(&curr) : 0;
         if (content_length <= 0)
         {
-          bad_request(client);
+          send_header_failure(client);
           return;
         }
       }
@@ -147,106 +166,64 @@ void accept_request(int client)
         strcpy(&qString, prev_token);
         break;
       }
-      //printf("token : %s\n", prev_token);
     }
   }
 
-  //printf(" qString -> %s /t query_string -> %s\n", qString, query_string);
-  //printf("\n.........\nCOMPLETE Received data -> \n metthod : %s\n url : %s version : %s \n", method,url,version);
+  sprintf(path, "htdocs%s", url);
+  printf("====> Path -> %s url -> %s\n", path, url);
+  if (path[strlen(path) - 1] == '/')
+    strcat(path, "index.html");
 
- //memset(&buf, 0, sizeof(buf));
-
- //numchars = get_line(client, buf, sizeof(buf));
- //printf(" Received data -> \n.........\n%s\n........\n", buf);
- /*
- i = 0; j = 0;
- while (!ISspace(buf[j]) && (i < sizeof(method) - 1))
- {
-  method[i] = buf[j];
-  i++; j++;
- }
- method[i] = '\0';
- printf(" method -> %s\n", method);
- if (strcasecmp(method, "GET") && strcasecmp(method, "POST"))
- {
-  unimplemented(client);
-  return;
- }
-
- if (strcasecmp(method, "POST") == 0)
-  cgi = 1;
-
- i = 0;
- while (ISspace(buf[j]) && (j < sizeof(buf)))
-  j++;
- while (!ISspace(buf[j]) && (i < sizeof(url) - 1) && (j < sizeof(buf)))
- {
-  url[i] = buf[j];
-  i++; j++;
- }
- url[i] = '\0';
- printf(" url -> %s\n", url);
- if (strcasecmp(method, "GET") == 0)
- {
-  query_string = url;
-  while ((*query_string != '?') && (*query_string != '\0'))
-   query_string++;
-  if (*query_string == '?')
+  printf("====> Path -> %s\n", path);
+  if (stat(path, &st) == -1)
   {
-   cgi = 1;
-   *query_string = '\0';
-   query_string++;
+    printf("File Not found %d %s\n", __LINE__, __FUNCTION__);
+    send_header_not_found(client);
   }
-  printf(" query_string -> %s\n", query_string);
- }
-*/
- sprintf(path, "htdocs%s", url);
-
- if (path[strlen(path) - 1] == '/')
-  strcat(path, "index.html");
-
- //printf(" path -> %s stat -> %d\n", path, stat(path, &st));
- if (stat(path, &st) == -1) {
-  printf("File Not found %d %s\n", __LINE__, __FUNCTION__);
-  not_found(client);
- }
- else
- {
-  if ((st.st_mode & S_IFMT) == S_IFDIR)
-   strcat(path, "/index.html");
-  if ((st.st_mode & S_IXUSR) ||
-      (st.st_mode & S_IXGRP) ||
-      (st.st_mode & S_IXOTH)    )
-   cgi = 1;
-
-  printf(" path -> %s and cgi -> %d\n", path, cgi);
-  if (!cgi)
-   serve_file(client, path);
   else
-   execute_cgi(client, path, method, &qString, content_length);
- }
+  {
+    if ((st.st_mode & S_IFMT) == S_IFDIR)
+      strcat(path, "/index.html");
 
- close(client);
+    /* If file is cgi and has 555 permission */
+    if (strstr(path,".cgi") || strstr(path,".py"))
+    {
+      if ((st.st_mode & S_IXUSR) || (st.st_mode & S_IXGRP) || (st.st_mode & S_IXOTH))
+      {
+        cgi = 1;
+      }
+      else
+      {
+        cgi = 0;
+        send_header_error(client, "Error prohibited CGI execution.");
+        error_exit("CGI file should have executable permission");
+      } 
+    }
+
+
+
+    if (!cgi)
+      serve_file(client, path);
+    else
+      execute_cgi(client, path, method, &qString);
+  }
+  close(client);
 }
 
 /**********************************************************************/
 /* Inform the client that a request it has made has a problem.
  * Parameters: client socket */
 /**********************************************************************/
-void bad_request(int client)
+void send_header_failure(int client)
 {
- char buf[1024];
+  char buf[1024];
 
- sprintf(buf, "HTTP/1.0 400 BAD REQUEST\r\n");
- send(client, buf, sizeof(buf), 0);
- sprintf(buf, "Content-type: text/html\r\n");
- send(client, buf, sizeof(buf), 0);
- sprintf(buf, "\r\n");
- send(client, buf, sizeof(buf), 0);
- sprintf(buf, "<P>Your browser sent a bad request, ");
- send(client, buf, sizeof(buf), 0);
- sprintf(buf, "such as a POST without a Content-Length.\r\n");
- send(client, buf, sizeof(buf), 0);
+  strcpy(buf, "HTTP/1.0 400 BAD REQUEST\r\n");
+  strcat(buf, "Content-type: text/html\r\n");
+  strcat(buf, "\r\n");
+  strcat(buf, "<h1>Bad request<h1>\r\n");
+  strcat(buf, "Your browser sent a bad request, such as a POST without a Content-Length.\r\n");
+  send(client, buf, strlen(buf), 0);
 }
 
 /**********************************************************************/
@@ -256,35 +233,33 @@ void bad_request(int client)
  * Parameters: the client socket descriptor
  *             FILE pointer for the file to cat */
 /**********************************************************************/
-void cat(int client, FILE *resource)
+void send_response(int client, FILE *resource)
 {
- char buf[1024];
-
- fgets(buf, sizeof(buf), resource);
- while (!feof(resource))
- {
-  //printf(" Sending data to browser .....\n%s\n", buf);
-  send(client, buf, strlen(buf), 0);
-  fgets(buf, sizeof(buf), resource);
- }
+  char readbuf[1024];
+  while(fgets(readbuf, sizeof(readbuf), resource) != NULL) {
+    send(client, readbuf, strlen(readbuf), 0);
+    memset(&readbuf, 0, sizeof(readbuf));
+  }
 }
 
 /**********************************************************************/
 /* Inform the client that a CGI script could not be executed.
  * Parameter: the client socket descriptor. */
 /**********************************************************************/
-void cannot_execute(int client)
+void send_header_error(int client, const char* err_msg)
 {
- char buf[1024];
+  char buf[1024];
 
- sprintf(buf, "HTTP/1.0 500 Internal Server Error\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "Content-type: text/html\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "<P>Error prohibited CGI execution.\r\n");
- send(client, buf, strlen(buf), 0);
+  strcpy(buf, "HTTP/1.0 500 Internal Server Error\r\n");
+  strcat(buf, "Content-type: text/html\r\n");
+  strcat(buf, "\r\n");
+  strcat(buf, "<h1>500 Internal Server Error.</h1>\r\n");
+  if (err_msg)
+  {
+    strcat(buf, err_msg);
+    strcat(buf, "\r\n");  
+  }
+  send(client, buf, strlen(buf), 0);
 }
 
 /**********************************************************************/
@@ -292,10 +267,12 @@ void cannot_execute(int client)
  * on value of errno, which indicates system call errors) and exit the
  * program indicating an error. */
 /**********************************************************************/
-void error_die(const char *sc)
+void error_exit(const char *sc)
 {
  perror(sc);
- exit(1);
+ printf("Thread is exiting due to error");
+ fflush(stdin);
+ pthread_exit(pthread_self);
 }
 
 /**********************************************************************/
@@ -305,140 +282,55 @@ void error_die(const char *sc)
  *             path to the CGI script */
 /**********************************************************************/
 void execute_cgi(int client, const char *path,
-                 const char *method, const char *query_string, int content_length)
+                 const char *method, const char *query_string)
 {
- char buf[1024];
- int cgi_output[2];
- int cgi_input[2];
- pid_t pid;
- int status;
- int i;
- char c;
- int numchars = 1;
- //int content_length = -1;
- printf("Inside execute_cgi %s\n", query_string);
- #if 0
- buf[0] = 'A'; buf[1] = '\0';
+  char buf[1024];
+  int cgi_output[2];
+  int cgi_input[2];
+  pid_t pid;
+  int status;
+  int i;
+  char c;
+  int numchars = 1;
 
- if (strcasecmp(method, "GET") == 0)
-  printf("GET method\n");
-  //while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
-  // numchars = 0;//get_line(client, buf, sizeof(buf));
- else    /* POST */
- {
+  printf("Inside execute_cgi %s\n", query_string);
 
-  numchars = 0;//get_line(client, buf, sizeof(buf));
-  printf("buf -> %s numchars -> %d\n", buf, numchars);
-  while ((numchars > 0) && strcmp("\n", buf))
-  {
-   buf[15] = '\0';
-   if (strcasecmp(buf, "Content-Length:") == 0)
-    content_length = atoi(&(buf[16]));
-   numchars = 0;//get_line(client, buf, sizeof(buf));
-  }
-  if (content_length == -1) {
-   bad_request(client);
-   return;
-  }
+#if 0
+  sprintf(buf, "HTTP/1.0 200 OK\r\n");
+  send(client, buf, strlen(buf), 0);
 
- }
+  strcpy(buf, SERVER_STRING);
+  send(client, buf, strlen(buf), 0);
+  sprintf(buf, "Content-Type: text/html\r\n");
+  send(client, buf, strlen(buf), 0);
+  strcpy(buf, "\r\n");
+  send(client, buf, strlen(buf), 0);
 #endif
- sprintf(buf, "HTTP/1.0 200 OK\r\n");
- send(client, buf, strlen(buf), 0);
 
- strcpy(buf, SERVER_STRING);
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "Content-Type: text/html\r\n");
- send(client, buf, strlen(buf), 0);
- strcpy(buf, "\r\n");
- send(client, buf, strlen(buf), 0);
-
-  char meth_env[255];
-  char query_env[255];
-  char length_env[255];
-
-  FILE *pipein_fp, *pipeout_fp;
+  FILE *pipein_fp;
   char readbuf[1024];
   memset(&readbuf, 0, sizeof(readbuf));
 
-  sprintf(query_env, "QUERY_STRING=%s", query_string);
-  putenv(query_env);
-  sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
-  putenv(length_env);
+  if ((pipein_fp = popen(path, "r")) == NULL) {
+    send_header_error(client, "Permission error.");
+    error_exit("popen");
+  } else {
+    setEnviormentForCGI(query_string);
+    send_header_success(client);
 
-  if (( pipein_fp = popen(path, "r")) == NULL)
-  {
-    perror("popen");
-    exit(1);
-  }
-
-  /* Processing loop */
-  printf("\n.........Response-1.........");
-
-  while(fgets(readbuf, sizeof(readbuf), pipein_fp) != NULL) {
-    unsigned int bytesRead = strlen(readbuf);
-    if (bytesRead == sizeof(readbuf))
-    {
-      send(client, readbuf, sizeof(readbuf), 0);
-      printf("%s\n", readbuf);
-    }
-    else
-    {
-      char* p = (char*)malloc((bytesRead)*sizeof(char));
-      strncpy (p, readbuf, bytesRead);
-      printf("%s\n", p);
-      send(client, p, bytesRead, 0);
-      free(p);
-    }
+    /* Processing loop */
+    printf("\n.........Response-1.........");
+    send_response(client, pipein_fp);
+    #if 0
+    while(fgets(readbuf, sizeof(readbuf), pipein_fp) != NULL) {
+    send(client, readbuf, strlen(readbuf), 0);
     memset(&readbuf, 0, sizeof(readbuf));
-  }
-  printf("\n.........END Response.........\n"); 
+    }
+    #endif
+    printf("\n.........END Response.........\n"); 
 
-  /* Close the pipes */
-  pclose(pipein_fp);  
-#if 0
- if (pid == 0)  /* child: CGI script */
- {
-  printf("child: CGI script\n");
-  char meth_env[255];
-  char query_env[255];
-  char length_env[255];
-
-  dup2(cgi_output[1], 1);
-  dup2(cgi_input[0], 0);
-  close(cgi_output[0]);
-  close(cgi_input[1]);
-  sprintf(meth_env, "REQUEST_METHOD=%s", method);
-  putenv(meth_env);
-  if (strcasecmp(method, "GET") == 0) {
-   sprintf(query_env, "QUERY_STRING=%s", query_string);
-   putenv(query_env);
+    pclose(pipein_fp);
   }
-  else {   /* POST */
-   sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
-   printf("length_env %s\n", length_env);
-   putenv(length_env);
-  }
-  execl(path, path, NULL);
-  exit(0);
- } else {    /* parent */
-  printf("parent: CGI script\n");
-  close(cgi_output[1]);
-  close(cgi_input[0]);
-  if (strcasecmp(method, "POST") == 0)
-   for (i = 0; i < content_length; i++) {
-    recv(client, &c, 1, 0);
-    write(cgi_input[1], &c, 1);
-    printf(" %c ", c);
-   }
-  while (read(cgi_output[0], &c, 1) > 0)
-   send(client, &c, 1, 0);
-
-  close(cgi_output[0]);
-  close(cgi_input[1]);
-  waitpid(pid, &status, 0);
- }
- #endif
 }
 
 /**********************************************************************/
@@ -446,46 +338,33 @@ void execute_cgi(int client, const char *path,
 /* Parameters: the socket to print the headers on
  *             the name of the file */
 /**********************************************************************/
-void headers(int client, const char *filename)
+void send_header_success(int client)
 {
  char buf[1024];
- (void)filename;  /* could use filename to determine file type */
+ //(void)filename;  /* could use filename to determine file type */
 
  strcpy(buf, "HTTP/1.0 200 OK\r\n");
+ strcat(buf, SERVER_STRING);
+ strcat(buf, "Content-Type: text/html\r\n");
+ strcat(buf, "\r\n");
  send(client, buf, strlen(buf), 0);
- strcpy(buf, SERVER_STRING);
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "Content-Type: text/html\r\n");
- send(client, buf, strlen(buf), 0);
- strcpy(buf, "\r\n");
- send(client, buf, strlen(buf), 0);
- printf(" HTTP Header sent to browser/client\n");
+ printf(" HTTP 200 Header sent to browser/client\n");
 }
 
 /**********************************************************************/
 /* Give a client a 404 not found status message. */
 /**********************************************************************/
-void not_found(int client)
+void send_header_not_found(int client)
 {
  char buf[1024];
 
- sprintf(buf, "HTTP/1.0 404 NOT FOUND\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, SERVER_STRING);
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "Content-Type: text/html\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "<HTML><TITLE>Not Found</TITLE>\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "<BODY><P>The server could not fulfill\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "your request because the resource specified\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "is unavailable or nonexistent.\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "</BODY></HTML>\r\n");
+ strcpy(buf, "HTTP/1.0 404 NOT FOUND\r\n");
+ strcat(buf, SERVER_STRING);
+ strcat(buf, "Content-Type: text/html\r\n");
+ strcat(buf, "\r\n");
+ strcat(buf, "<h1>404 NOT FOUND</h1>\r\n");
+ strcat(buf, "Resource specified is unavailable or nonexistent.\r\n");
+ strcat(buf, "\r\n");
  send(client, buf, strlen(buf), 0);
 }
 
@@ -498,18 +377,19 @@ void not_found(int client)
 /**********************************************************************/
 void serve_file(int client, const char *filename)
 {
- FILE *resource = NULL;
+  FILE *resource = NULL;
 
- resource = fopen(filename, "r");
- printf("serve_file %s %p\n..............\n%s\n.........\n", filename, resource);
- if (resource == NULL)
-  not_found(client);
- else
- {
-  headers(client, filename);
-  cat(client, resource);
- }
- fclose(resource);
+  resource = fopen(filename, "r");
+  if (resource == NULL) {
+    send_header_not_found(client);
+    error_exit(client);
+  }
+  else
+  {
+    send_header_success(client);
+    send_response(client, resource);
+    fclose(resource);
+  }
 }
 
 /**********************************************************************/
@@ -527,7 +407,7 @@ int startup(u_short *port)
 
  httpd = socket(PF_INET, SOCK_STREAM, 0);
  if (httpd == -1)
-  error_die("socket");
+  error_exit("socket");
 
  printf("1. Server socket is created. httpd running on port %d\n", *port);
 
@@ -537,19 +417,19 @@ int startup(u_short *port)
  name.sin_addr.s_addr = htonl(INADDR_ANY);
 
  if (bind(httpd, (struct sockaddr *)&name, sizeof(name)) < 0)
-  error_die("bind");
+  error_exit("bind");
 
  printf("2. Server socket is bind with port number nad IP address\n");
  if (*port == 0)  /* if dynamically allocating a port */
  {
   int namelen = sizeof(name);
   if (getsockname(httpd, (struct sockaddr *)&name, &namelen) == -1)
-   error_die("getsockname");
+   error_exit("getsockname");
   *port = ntohs(name.sin_port);
  }
 
  if (listen(httpd, 5) < 0)
-  error_die("listen");
+  error_exit("listen");
 
  printf("3. Server socket is listning on port %d for connections\n", *port);
  return(httpd);
@@ -562,25 +442,29 @@ int startup(u_short *port)
 /**********************************************************************/
 void unimplemented(int client)
 {
- char buf[1024];
-
- sprintf(buf, "HTTP/1.0 501 Method Not Implemented\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, SERVER_STRING);
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "Content-Type: text/html\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "<HTML><HEAD><TITLE>Method Not Implemented\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "</TITLE></HEAD>\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "<BODY><P>HTTP request method not supported.\r\n");
- send(client, buf, strlen(buf), 0);
- sprintf(buf, "</BODY></HTML>\r\n");
- send(client, buf, strlen(buf), 0);
+  char buf[1024];
+  memset(&buf, 0, sizeof(buf));
+  strcat(buf, "HTTP/1.0 501 Method Not Implemented\r\n");
+  strcat(buf, SERVER_STRING);
+  strcat(buf, "Content-Type: text/html\r\n");
+  strcat(buf, "\r\n");
+  strcat(buf, "<HTML><HEAD><TITLE>Method Not Implemented\r\n");
+  strcat(buf, "</TITLE></HEAD>\r\n");
+  strcat(buf, "<BODY><P>HTTP request method not supported.</P>\r\n");
+  strcat(buf, "</BODY></HTML>\r\n");
+  send(client, buf, strlen(buf), 0);
 }
+
+void setEnviormentForCGI(char* query_string)
+{
+  char query_env[255];
+  char length_env[255];
+  sprintf(query_env, "QUERY_STRING=%s", query_string);
+  putenv(query_env);
+  sprintf(length_env, "CONTENT_LENGTH=%d", strlen(query_string));
+  putenv(length_env);
+}
+
 
 /**********************************************************************/
 
@@ -603,12 +487,19 @@ int main(void)
                        &client_name_len);
 
   if (client_sock == -1)
-   error_die("accept");
+   error_exit("accept");
 
- printf("4. Server accepted connection request form machine %s\n", inet_ntoa(client_name.sin_addr));
- accept_request(client_sock);
+  printf("4. Server accepted connection request form machine %s\n", inet_ntoa(client_name.sin_addr));
+  pthread_t tid;
+  if (pthread_create(&tid, NULL, handle_request_response, client_sock) == 0)
+      pthread_detach(tid);
+  else
+    send_header_error(client_sock, 0);
+  
+  //handle_request_response(client_sock);
+  //receive_request(client_sock);
 
- //if (pthread_create(&newthread , NULL, accept_request, client_sock) != 0)
+ //if (pthread_create(&newthread , NULL, receive_request, client_sock) != 0)
  //perror("pthread_create");
  }
 
