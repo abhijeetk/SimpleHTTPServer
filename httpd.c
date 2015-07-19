@@ -14,7 +14,10 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <signal.h>
-#include "request-response.h"
+
+#define MAX_BUFFER_SIZE 1024
+#define PATH_MAX 512
+#define METHOD_NAME 256
 
 #define SERVER_STRING "Server: SimpleHTTPServer/0.1.0\r\n"
 
@@ -29,12 +32,12 @@ void send_header_failure(int); // Bad request 400
 void send_header_success(int); // OK 200
 void send_header_not_found(int); // Not found 404
 
-void execute_cgi(int, const char *, const char *, const char *);
+void execute_cgi(int, const char *, const char *);
 void serve_file(int, const char *);
 
 void server_log(const char *);
 void unimplemented(int);
-void setEnviormentForCGI(char* query_string);
+void setEnviormentForCGI(const char* query_string);
 
 int startup(u_short *);
 
@@ -61,29 +64,28 @@ static void* handle_request_response(int client_sock)
 }
 
 /**********************************************************************/
-/* A request has caused a call to accept() on the server port to
- * return.  Process the request appropriately.
+/* This API process request from clinet. It parse HTTP Header, executes 
+ * respective HTTP method and send response back to server.
  * Parameters: the socket connected to the client */
 /**********************************************************************/
 void receive_request(int client)
 {
-  char buf[1024];
-  char method[255];
-  char url[255];
-  char path[512];
-  struct stat st;
-  int cgi = 0;      /* becomes true if server decides this is a CGI
-                  * program */
-  char *query_string = NULL;
-  char qString[1024];
+  char buf[MAX_BUFFER_SIZE];
+  char method[METHOD_NAME];
+  char fileName[PATH_MAX];
+  char resource_path[PATH_MAX];
 
-  char requestBuffer[1024];
+  struct stat st;
+  int cgi = 0; /* becomes true if server decides this is a CGI program */
+  char *query_string = NULL;
+  char qString[MAX_BUFFER_SIZE];
+
+  char requestBuffer[MAX_BUFFER_SIZE];
   memset(&requestBuffer, 0, sizeof(requestBuffer));
   int content_length = -1;
 
-  int numbytes = 100;
-
-  if ((numbytes=recv(client, requestBuffer, sizeof(requestBuffer), 0)) == -1) {
+  int numbytes = 0;
+  if ((numbytes = recv(client, requestBuffer, sizeof(requestBuffer), 0)) == -1) {
     server_log("Request is not received\n");
     return;
   }
@@ -94,23 +96,21 @@ void receive_request(int client)
   }
 
   requestBuffer[numbytes] = '\0';
-  printf("\n.......REQUEST......\n%s\n.....Size %d.....numbytes %d\n", requestBuffer, strlen(requestBuffer), numbytes);
   strcpy(buf, requestBuffer);
+
   memset(&method, 0, sizeof(method));
   char* token = NULL;
   token = strtok(requestBuffer, " ");
   strcpy(&method, token ? token : "");
 
-  memset(&url, 0, sizeof(url));
+  memset(&fileName, 0, sizeof(fileName));
   token =  strtok(NULL, " ");
-  strcpy(&url, token ? token : "");
+  strcpy(&fileName, token ? token : "");
 
   char version[64];
   memset(&version, 0, sizeof(version));
   token = strtok(NULL, "\r\n");
   strcpy(&version, token ? token : "");
-
-  printf("method -> %s url -> %s version -> %s\n", method, url, version);
 
   if (!(strcasecmp(&method, "HEAD") || strcasecmp(&method, "GET") || strcasecmp(&method, "POST")))
   {
@@ -120,28 +120,25 @@ void receive_request(int client)
 
   if (strcasecmp(&method, "HEAD") == 0)
   {
-    printf("...HEAD method...\n");
+    cgi = 0;
     send_header_success(client);
     return;
   }
-  else if (strcasecmp(&method, "GET") == 0 && strchr(url, '?'))
+  else if (strcasecmp(&method, "GET") == 0 && strchr(fileName, '?'))
   {
     cgi = 1;
-    char complete_url[1024];
-    strcpy(complete_url, url);
-    printf("complete_url -> %s\n", complete_url);
-    memset(&url, 0, sizeof(url));
-    token = strtok(complete_url, "?");
-    strcpy(&url, token ? token : "");
-    printf("url -> %s\n", url);
+    char complete_fileName[MAX_BUFFER_SIZE];
+    strcpy(complete_fileName, fileName);
+    memset(&fileName, 0, sizeof(fileName));
+    token = strtok(complete_fileName, "?");
+    strcpy(&fileName, token ? token : "");
     memset(&qString, 0, sizeof(qString));
     token = strtok(NULL, "\r\n");
     strcpy(&qString, token ? token : "");
-    printf("method -> %s url -> %s qString -> %s\n", method, url, qString);
   }
   else if (strcasecmp(method, "POST") == 0)
   {
-    char prev_token[1024];
+    char prev_token[MAX_BUFFER_SIZE];
     memset(&prev_token, 0, sizeof(prev_token));
     token = strtok(buf, "\r\n");
     while(token) {
@@ -168,24 +165,22 @@ void receive_request(int client)
     }
   }
 
-  sprintf(path, "htdocs%s", url);
-  printf("====> Path -> %s url -> %s\n", path, url);
-  if (path[strlen(path) - 1] == '/')
-    strcat(path, "index.html");
+  sprintf(resource_path, "htdocs%s", fileName);
+  if (resource_path[strlen(resource_path) - 1] == '/')
+    strcat(resource_path, "index.html");
 
-  printf("====> Path -> %s\n", path);
-  if (stat(path, &st) == -1)
+  if (stat(resource_path, &st) == -1)
   {
-    printf("File Not found %d %s\n", __LINE__, __FUNCTION__);
+    server_log("File Not found");
     send_header_not_found(client);
   }
   else
   {
     if ((st.st_mode & S_IFMT) == S_IFDIR)
-      strcat(path, "/index.html");
+      strcat(resource_path, "/index.html");
 
     /* If file is cgi and has 555 permission */
-    if (strstr(path,".cgi") || strstr(path,".py"))
+    if (strstr(resource_path,".cgi") || strstr(resource_path,".py"))
     {
       if ((st.st_mode & S_IXUSR) || (st.st_mode & S_IXGRP) || (st.st_mode & S_IXOTH))
       {
@@ -200,12 +195,10 @@ void receive_request(int client)
       } 
     }
 
-
-
     if (!cgi)
-      serve_file(client, path);
+      serve_file(client, resource_path);
     else
-      execute_cgi(client, path, method, &qString);
+      execute_cgi(client, resource_path, &qString);
   }
   close(client);
 }
@@ -216,7 +209,7 @@ void receive_request(int client)
 /**********************************************************************/
 void send_header_failure(int client)
 {
-  char buf[1024];
+  char buf[MAX_BUFFER_SIZE];
 
   strcpy(buf, "HTTP/1.0 400 BAD REQUEST\r\n");
   strcat(buf, "Content-type: text/html\r\n");
@@ -227,15 +220,13 @@ void send_header_failure(int client)
 }
 
 /**********************************************************************/
-/* Put the entire contents of a file out on a socket.  This function
- * is named after the UNIX "cat" command, because it might have been
- * easier just to do something like pipe, fork, and exec("cat").
+/* Put the entire contents of a file out on a socket.
  * Parameters: the client socket descriptor
  *             FILE pointer for the file to cat */
 /**********************************************************************/
 void send_response(int client, FILE *resource)
 {
-  char readbuf[1024];
+  char readbuf[MAX_BUFFER_SIZE];
   while(fgets(readbuf, sizeof(readbuf), resource) != NULL) {
     send(client, readbuf, strlen(readbuf), 0);
     memset(&readbuf, 0, sizeof(readbuf));
@@ -244,11 +235,12 @@ void send_response(int client, FILE *resource)
 
 /**********************************************************************/
 /* Inform the client that a CGI script could not be executed.
- * Parameter: the client socket descriptor. */
+ * Parameter: the client socket descriptor.
+ *             Error message if any */
 /**********************************************************************/
 void send_header_error(int client, const char* err_msg)
 {
-  char buf[1024];
+  char buf[MAX_BUFFER_SIZE];
 
   strcpy(buf, "HTTP/1.0 500 Internal Server Error\r\n");
   strcat(buf, "Content-type: text/html\r\n");
@@ -263,9 +255,7 @@ void send_header_error(int client, const char* err_msg)
 }
 
 /**********************************************************************/
-/* Print out an error message with perror() (for system errors; based
- * on value of errno, which indicates system call errors) and exit the
- * program indicating an error. */
+/* Print out an error message with perror() */
 /**********************************************************************/
 void server_log(const char *sc)
 {
@@ -276,70 +266,35 @@ void server_log(const char *sc)
 /* Execute a CGI script.  Will need to set environment variables as
  * appropriate.
  * Parameters: client socket descriptor
- *             path to the CGI script */
+ *             resource_path to the CGI script
+ *              query_string form client */
 /**********************************************************************/
-void execute_cgi(int client, const char *path,
-                 const char *method, const char *query_string)
+void execute_cgi(int client, const char *resource_path, const char *query_string)
 {
-  char buf[1024];
-  int cgi_output[2];
-  int cgi_input[2];
-  pid_t pid;
-  int status;
-  int i;
-  char c;
-  int numchars = 1;
-
-  printf("Inside execute_cgi %s\n", query_string);
-
-#if 0
-  sprintf(buf, "HTTP/1.0 200 OK\r\n");
-  send(client, buf, strlen(buf), 0);
-
-  strcpy(buf, SERVER_STRING);
-  send(client, buf, strlen(buf), 0);
-  sprintf(buf, "Content-Type: text/html\r\n");
-  send(client, buf, strlen(buf), 0);
-  strcpy(buf, "\r\n");
-  send(client, buf, strlen(buf), 0);
-#endif
 
   FILE *pipein_fp;
-  char readbuf[1024];
+  char readbuf[MAX_BUFFER_SIZE];
   memset(&readbuf, 0, sizeof(readbuf));
 
-  if ((pipein_fp = popen(path, "r")) == NULL) {
+  if ((pipein_fp = popen(resource_path, "r")) == NULL) {
     send_header_error(client, "Permission error.");
     server_log("popen");
     return;
   } else {
     setEnviormentForCGI(query_string);
     send_header_success(client);
-
-    /* Processing loop */
-    printf("\n.........Response-1.........");
     send_response(client, pipein_fp);
-    #if 0
-    while(fgets(readbuf, sizeof(readbuf), pipein_fp) != NULL) {
-    send(client, readbuf, strlen(readbuf), 0);
-    memset(&readbuf, 0, sizeof(readbuf));
-    }
-    #endif
-    printf("\n.........END Response.........\n"); 
-
     pclose(pipein_fp);
   }
 }
 
 /**********************************************************************/
-/* Return the informational HTTP headers about a file. */
-/* Parameters: the socket to print the headers on
- *             the name of the file */
+/* Return standard response for successful HTTP requests.
+ * Parameters: the socket to print the headers on. */
 /**********************************************************************/
 void send_header_success(int client)
 {
- char buf[1024];
- //(void)filename;  /* could use filename to determine file type */
+ char buf[MAX_BUFFER_SIZE];
 
  strcpy(buf, "HTTP/1.0 200 OK\r\n");
  strcat(buf, SERVER_STRING);
@@ -350,11 +305,13 @@ void send_header_success(int client)
 }
 
 /**********************************************************************/
-/* Give a client a 404 not found status message. */
+/* Return standard response for requested resource could not be found but
+*  may be available again in the future. Subsequent requests by the client are permissible.
+*  Parameters: the socket to print the headers on. */
 /**********************************************************************/
 void send_header_not_found(int client)
 {
- char buf[1024];
+ char buf[MAX_BUFFER_SIZE];
 
  strcpy(buf, "HTTP/1.0 404 NOT FOUND\r\n");
  strcat(buf, SERVER_STRING);
@@ -367,10 +324,9 @@ void send_header_not_found(int client)
 }
 
 /**********************************************************************/
-/* Send a regular file to the client.  Use headers, and report
- * errors to client if they occur.
+/* Send a requested resource file to the client ad response.
+ * Report errors to client if they occur.
  * Parameters: a pointer to a file structure produced from the socket
- *              file descriptor
  *             the name of the file to serve */
 /**********************************************************************/
 void serve_file(int client, const char *filename)
@@ -392,9 +348,8 @@ void serve_file(int client, const char *filename)
 }
 
 /**********************************************************************/
-/* This function starts the process of listening for web connections
+/* This function establish connection between server and clinet
  * on a specified port.  If the port is 0, then dynamically allocate a
- * port and modify the original port variable to reflect the actual
  * port.
  * Parameters: pointer to variable containing the port to connect on
  * Returns: the socket */
@@ -408,8 +363,6 @@ int startup(u_short *port)
  if (httpd == -1)
   server_log("socket");
 
- printf("1. Server socket is created. httpd running on port %d\n", *port);
-
  memset(&name, 0, sizeof(name));
  name.sin_family = AF_INET;
  name.sin_port = htons(*port);
@@ -418,7 +371,6 @@ int startup(u_short *port)
  if (bind(httpd, (struct sockaddr *)&name, sizeof(name)) < 0)
   server_log("bind");
 
- printf("2. Server socket is bind with port number nad IP address\n");
  if (*port == 0)  /* if dynamically allocating a port */
  {
   int namelen = sizeof(name);
@@ -430,7 +382,6 @@ int startup(u_short *port)
  if (listen(httpd, 5) < 0)
   server_log("listen");
 
- printf("3. Server socket is listning on port %d for connections\n", *port);
  return(httpd);
 }
 
@@ -441,7 +392,7 @@ int startup(u_short *port)
 /**********************************************************************/
 void unimplemented(int client)
 {
-  char buf[1024];
+  char buf[MAX_BUFFER_SIZE];
   memset(&buf, 0, sizeof(buf));
   strcat(buf, "HTTP/1.0 501 Method Not Implemented\r\n");
   strcat(buf, SERVER_STRING);
@@ -454,7 +405,11 @@ void unimplemented(int client)
   send(client, buf, strlen(buf), 0);
 }
 
-void setEnviormentForCGI(char* query_string)
+/**********************************************************************/
+/* Set QUERY_STRING and CONTENT_LENGTH used by CGI enviorment for execution.
+ * Parameter: query_string form clinet */
+/**********************************************************************/
+void setEnviormentForCGI(const char* query_string)
 {
   char query_env[255];
   char length_env[255];
@@ -466,7 +421,6 @@ void setEnviormentForCGI(char* query_string)
 
 
 /**********************************************************************/
-
 int main(void)
 {
  int server_sock = -1;
@@ -474,7 +428,6 @@ int main(void)
  int client_sock = -1;
  struct sockaddr_in client_name;
  int client_name_len = sizeof(client_name);
- //pthread_t newthread;
 
  server_sock = startup(&port);
  printf("httpd running on port %d\n", port);
@@ -491,18 +444,16 @@ int main(void)
   printf("4. Server accepted connection request form machine %s\n", inet_ntoa(client_name.sin_addr));
   pthread_t tid;
   if (pthread_create(&tid, NULL, handle_request_response, client_sock) == 0)
+  {
       pthread_detach(tid);
+  }
   else
+  {
     send_header_error(client_sock, 0);
-  
-  //handle_request_response(client_sock);
-  //receive_request(client_sock);
-
- //if (pthread_create(&newthread , NULL, receive_request, client_sock) != 0)
- //perror("pthread_create");
+    server_log("Thread creation issue\n");
+  }
  }
 
  close(server_sock);
-
  return(0);
 }
