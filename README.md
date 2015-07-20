@@ -24,13 +24,13 @@ HTTP server is implemented using socket programming to support GET, HEAD and POS
 .../SimpleHTTPServer$ ./httpd<br>
 httpd running on port 37889<br><br>
 To check server is working or not, open http://127.0.1.1:37889/ in browser<br>
-<br><br>
+<br>
 <b>How to test:</b><br>
 <ol>
 <li>HTTP GET Method : http://127.0.1.1:37889/GET.html </li>
-<li>HTTP POST Method : http://127.0.1.1:37889/GET.html </li>
+<li>HTTP POST Method : http://127.0.1.1:37889/POST.html </li>
 <li>HTTP HEAD Method : <br>
-.../SimpleHTTPServer$ curl -i -X HEAD  http://127.0.1.1:41224 <br>
+.../SimpleHTTPServer$ curl -i -X HEAD  http://127.0.1.1:37889 <br>
 HTTP/1.0 200 OK <br>
 Server: SimpleHTTPServer/0.1.0 <br>
 Content-Type: text/html<br>
