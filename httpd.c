@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <signal.h>
-#include "request-response.h"
+//#include "request-response.h"
 
 #define SERVER_STRING "Server: SimpleHTTPServer/0.1.0\r\n"
 
@@ -32,7 +32,7 @@ void send_header_not_found(int); // Not found 404
 void execute_cgi(int, const char *, const char *, const char *);
 void serve_file(int, const char *);
 
-void error_exit(const char *);
+void perror(const char *);
 void unimplemented(int);
 void setEnviormentForCGI(char* query_string);
 
@@ -68,38 +68,40 @@ static void* handle_request_response(int client_sock)
 void receive_request(int client)
 {
   char buf[1024];
-  int numchars;
+ // int numchars;
   char method[255];
   char url[255];
   char path[512];
-  size_t i, j;
+ // size_t i, j;
   struct stat st;
   int cgi = 0;      /* becomes true if server decides this is a CGI
                   * program */
   char *query_string = NULL;
   char qString[1024];
 
-  char test[1024];
-  memset(&test, 0, sizeof(test));
+  char requestBuffer[1024];
+  memset(&requestBuffer, 0, sizeof(requestBuffer));
   int content_length = -1;
 
   int numbytes = 100;
 
-  if ((numbytes=recv(client, test, sizeof(test), 0)) == -1)
-    error_exit("Request is not received\n");
-
-  if (numbytes == 0) {
-    send_header_failure(client);
-    error_exit("No messages are available or peer has performed an orderly shutdown.\n");
+  if ((numbytes = recv(client, requestBuffer, sizeof(requestBuffer), 0)) == -1) {
+    perror("Request is not received\n");
     return;
   }
 
-  test[numbytes] = '\0';
-  printf("\n.......REQUEST......\n%s\n.....Size %d.....numbytes %d\n", test, strlen(test), numbytes);
-  strcpy(buf, test);
+  if (numbytes == 0) {
+    send_header_failure(client);
+    perror("No messages are available or peer has performed an orderly shutdown.\n");
+    return;
+  }
+
+  requestBuffer[numbytes] = '\0';
+  printf("\n.......REQUEST......\n%s\n.....Size %d.....numbytes %d\n", requestBuffer, strlen(requestBuffer), numbytes);
+  strcpy(buf, requestBuffer);
   memset(&method, 0, sizeof(method));
   char* token = NULL;
-  token = strtok(test, " ");
+  token = strtok(requestBuffer, " ");
   strcpy(&method, token ? token : "");
 
   memset(&url, 0, sizeof(url));
@@ -122,6 +124,7 @@ void receive_request(int client)
   if (strcasecmp(&method, "HEAD") == 0)
   {
     printf("...HEAD method...\n");
+    cgi = 0;
     send_header_success(client);
     return;
   }
@@ -196,11 +199,10 @@ void receive_request(int client)
       {
         cgi = 0;
         send_header_error(client, "Error prohibited CGI execution.");
-        error_exit("CGI file should have executable permission");
+        perror("CGI file should have executable permission");
+        return;
       } 
     }
-
-
 
     if (!cgi)
       serve_file(client, path);
@@ -217,6 +219,7 @@ void receive_request(int client)
 void send_header_failure(int client)
 {
   char buf[1024];
+  memset(buf, 0, sizeof(buf));
 
   strcpy(buf, "HTTP/1.0 400 BAD REQUEST\r\n");
   strcat(buf, "Content-type: text/html\r\n");
@@ -236,6 +239,7 @@ void send_header_failure(int client)
 void send_response(int client, FILE *resource)
 {
   char readbuf[1024];
+  memset(readbuf, 0, sizeof(readbuf));
   while(fgets(readbuf, sizeof(readbuf), resource) != NULL) {
     send(client, readbuf, strlen(readbuf), 0);
     memset(&readbuf, 0, sizeof(readbuf));
@@ -249,7 +253,7 @@ void send_response(int client, FILE *resource)
 void send_header_error(int client, const char* err_msg)
 {
   char buf[1024];
-
+  memset(buf, 0, sizeof(buf));
   strcpy(buf, "HTTP/1.0 500 Internal Server Error\r\n");
   strcat(buf, "Content-type: text/html\r\n");
   strcat(buf, "\r\n");
@@ -260,19 +264,6 @@ void send_header_error(int client, const char* err_msg)
     strcat(buf, "\r\n");  
   }
   send(client, buf, strlen(buf), 0);
-}
-
-/**********************************************************************/
-/* Print out an error message with perror() (for system errors; based
- * on value of errno, which indicates system call errors) and exit the
- * program indicating an error. */
-/**********************************************************************/
-void error_exit(const char *sc)
-{
- perror(sc);
- printf("Thread is exiting due to error");
- fflush(stdin);
- pthread_exit(pthread_self);
 }
 
 /**********************************************************************/
@@ -295,25 +286,13 @@ void execute_cgi(int client, const char *path,
 
   printf("Inside execute_cgi %s\n", query_string);
 
-#if 0
-  sprintf(buf, "HTTP/1.0 200 OK\r\n");
-  send(client, buf, strlen(buf), 0);
-
-  strcpy(buf, SERVER_STRING);
-  send(client, buf, strlen(buf), 0);
-  sprintf(buf, "Content-Type: text/html\r\n");
-  send(client, buf, strlen(buf), 0);
-  strcpy(buf, "\r\n");
-  send(client, buf, strlen(buf), 0);
-#endif
-
   FILE *pipein_fp;
   char readbuf[1024];
   memset(&readbuf, 0, sizeof(readbuf));
 
   if ((pipein_fp = popen(path, "r")) == NULL) {
     send_header_error(client, "Permission error.");
-    error_exit("popen");
+    perror("popen");
   } else {
     setEnviormentForCGI(query_string);
     send_header_success(client);
@@ -321,12 +300,6 @@ void execute_cgi(int client, const char *path,
     /* Processing loop */
     printf("\n.........Response-1.........");
     send_response(client, pipein_fp);
-    #if 0
-    while(fgets(readbuf, sizeof(readbuf), pipein_fp) != NULL) {
-    send(client, readbuf, strlen(readbuf), 0);
-    memset(&readbuf, 0, sizeof(readbuf));
-    }
-    #endif
     printf("\n.........END Response.........\n"); 
 
     pclose(pipein_fp);
@@ -341,7 +314,7 @@ void execute_cgi(int client, const char *path,
 void send_header_success(int client)
 {
  char buf[1024];
- //(void)filename;  /* could use filename to determine file type */
+ memset(buf, 0, sizeof(buf));
 
  strcpy(buf, "HTTP/1.0 200 OK\r\n");
  strcat(buf, SERVER_STRING);
@@ -357,6 +330,7 @@ void send_header_success(int client)
 void send_header_not_found(int client)
 {
  char buf[1024];
+ memset(buf, 0, sizeof(buf));
 
  strcpy(buf, "HTTP/1.0 404 NOT FOUND\r\n");
  strcat(buf, SERVER_STRING);
@@ -382,7 +356,8 @@ void serve_file(int client, const char *filename)
   resource = fopen(filename, "r");
   if (resource == NULL) {
     send_header_not_found(client);
-    error_exit(client);
+    perror(client);
+    return;
   }
   else
   {
@@ -402,34 +377,38 @@ void serve_file(int client, const char *filename)
 /**********************************************************************/
 int startup(u_short *port)
 {
- int httpd = 0;
+ int httpd = -1;
  struct sockaddr_in name;
 
  httpd = socket(PF_INET, SOCK_STREAM, 0);
- if (httpd == -1)
-  error_exit("socket");
-
- printf("1. Server socket is created. httpd running on port %d\n", *port);
+ if (httpd == -1) {
+  perror("socket");
+  return -1;
+}
 
  memset(&name, 0, sizeof(name));
  name.sin_family = AF_INET;
  name.sin_port = htons(*port);
  name.sin_addr.s_addr = htonl(INADDR_ANY);
 
- if (bind(httpd, (struct sockaddr *)&name, sizeof(name)) < 0)
-  error_exit("bind");
+  if (bind(httpd, (struct sockaddr *)&name, sizeof(name)) < 0) {
+    perror("bind");
+    return -1;
+  }
 
  printf("2. Server socket is bind with port number nad IP address\n");
  if (*port == 0)  /* if dynamically allocating a port */
  {
   int namelen = sizeof(name);
   if (getsockname(httpd, (struct sockaddr *)&name, &namelen) == -1)
-   error_exit("getsockname");
+   perror("getsockname");
   *port = ntohs(name.sin_port);
  }
 
- if (listen(httpd, 5) < 0)
-  error_exit("listen");
+  if (listen(httpd, 5) < 0) {
+    perror("listen");
+    return -1;
+  }
 
  printf("3. Server socket is listning on port %d for connections\n", *port);
  return(httpd);
@@ -443,7 +422,7 @@ int startup(u_short *port)
 void unimplemented(int client)
 {
   char buf[1024];
-  memset(&buf, 0, sizeof(buf));
+  memset(buf, 0, sizeof(buf));
   strcat(buf, "HTTP/1.0 501 Method Not Implemented\r\n");
   strcat(buf, SERVER_STRING);
   strcat(buf, "Content-Type: text/html\r\n");
@@ -478,6 +457,9 @@ int main(void)
  //pthread_t newthread;
 
  server_sock = startup(&port);
+ if (server_sock == -1)
+  return 0;
+
  printf("httpd running on port %d\n", port);
 
  while (1)
@@ -486,8 +468,10 @@ int main(void)
                        (struct sockaddr *)&client_name,
                        &client_name_len);
 
-  if (client_sock == -1)
-   error_exit("accept");
+  if (client_sock == -1) {
+   perror("accept");
+   return 0;
+  }
 
   printf("4. Server accepted connection request form machine %s\n", inet_ntoa(client_name.sin_addr));
   pthread_t tid;
@@ -504,6 +488,5 @@ int main(void)
  }
 
  close(server_sock);
-
- return(0);
+ return 0;
 }
