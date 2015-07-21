@@ -33,8 +33,8 @@ void send_header_failure(int); // Bad request 400
 void send_header_success(int); // OK 200
 void send_header_not_found(int); // Not found 404
 
-void execute_cgi(int, const char*, const char*, const char*);
-void serve_file(int, const char*);
+void executeCGIScript(int, const char*, const char*, const char*);
+void serveFile(int, const char*);
 
 void server_log(const char*);
 void unimplemented(int);
@@ -195,9 +195,9 @@ void receive_request(int client)
     }
 
     if (!cgi)
-      serve_file(client, resource_path);
+      serveFile(client, resource_path);
     else
-      execute_cgi(client, resource_path, qString, method);
+      executeCGIScript(client, resource_path, qString, method);
   }
   close(client);
 }
@@ -262,13 +262,12 @@ void server_log(const char *sc)
 }
 
 /**********************************************************************/
-/* Execute a CGI script.  Will need to set environment variables as
- * appropriate.
+/* Execute a CGI script and set environment variables.
  * Parameters: client socket descriptor
  *             resource_path to the CGI script
  *              query_string form client */
 /**********************************************************************/
-void execute_cgi(int client, const char* path, const char* query_string, const char* method)
+void executeCGIScript(int client, const char* path, const char* query_string, const char* method)
 {
   FILE *pipein_fp;
   char readbuf[MAX_BUFFER_SIZE];
@@ -343,7 +342,7 @@ void send_header_not_found(int client)
  * Parameters: a pointer to a file structure produced from the socket
  *             the name of the file to serve */
 /**********************************************************************/
-void serve_file(int client, const char* filename)
+void serveFile(int client, const char* filename)
 {
   FILE* resource = NULL;
 
